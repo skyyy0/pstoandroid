@@ -24,9 +24,11 @@ android {
         versionName = "0.1.0"
 
         // Single ABI: every Android device able to run this renderer at 60 fps is
-        // arm64. Shipping one ABI halves the native payload in the APK.
+        // arm64. Shipping one ABI halves the native payload in the APK. The CI
+        // emulator smoke test overrides it with -Pstorm.abi=x86_64.
+        val abiOverride = providers.gradleProperty("storm.abi").orNull
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += abiOverride?.split(",")?.map { it.trim() } ?: listOf("arm64-v8a")
         }
 
         externalNativeBuild {

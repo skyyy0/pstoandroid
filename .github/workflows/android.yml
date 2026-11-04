@@ -183,3 +183,87 @@ jobs:
             dist/*.apk dist/*.apk.7z dist/SHA256SUMS.txt \
             --title "Storm Revolution $GITHUB_REF_NAME" \
             --notes "Install the .apk directly. The .apk.7z is the same build with better transfer compression: extract it first (7z x)."
+
+  smoke:
+    name: Emulator smoke test (x86_64)
+    needs: tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Ensure NDK and CMake
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          NEED=()
+          [ -d "$SDK/ndk/$NDK_VERSION" ] || NEED+=("ndk;$NDK_VERSION")
+          [ -d "$SDK/cmake/3.22.1" ] || NEED+=("cmake;3.22.1")
+          if [ ${#NEED[@]} -gt 0 ]; then
+            set +o pipefail
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "${NEED[@]}" > /dev/null
+            set -o pipefail
+          fi
+
+      - name: Build debug APK for the emulator ABI
+        run: |
+          set -euo pipefail
+          gradle -p android :app:assembleDebug --no-daemon -Pstorm.abi=x86_64
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # This is the only check that proves the APK actually boots and renders:
+      # the emulator runs the real GLES 3 renderer through SwiftShader.
+      - name: Install, launch, assert engine ready
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          profile: pixel_4
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: >-
+            -no-window -no-snapshot -no-audio -no-boot-anim
+            -gpu swiftshader_indirect -camera-back none -camera-front none
+          script: |
+            set -eu
+            APK=android/app/build/outputs/apk/debug/app-debug.apk
+            adb install -r "$APK"
+            adb logcat -c
+            adb shell am start -W -n com.sky.stormrev/.MainActivity
+            sleep 25
+            adb logcat -d -s StormPort:* AndroidRuntime:E | tail -120
+            PID="$(adb shell pidof com.sky.stormrev | tr -d '\r')"
+            echo "app pid: ${PID:-none}"
+            test -n "$PID"
+            adb logcat -d | grep -q "engine ready"
+            adb exec-out screencap -p > smoke.png
+            ls -l smoke.png
+
+      - name: Upload smoke screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot-${{ github.run_number }}
+          path: smoke.png
+          retention-days: 1
+          if-no-files-found: warn

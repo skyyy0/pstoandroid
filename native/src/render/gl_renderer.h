@@ -80,7 +80,7 @@ private:
     void createBlobMesh();
     GpuMesh& meshFor(const Mesh& mesh);
     void uploadMesh(const Mesh& mesh, GpuMesh& gpu);
-    void drawItem(const DrawItem& item, const FrameView& frame, bool outlinePass);
+    void drawItem(const DrawItem& item, bool outlinePass);
     void drawBlob(const DrawItem& item, const FrameView& frame);
     void uploadBones(const Pose& pose);
 

@@ -429,7 +429,7 @@ void GLRenderer::drawBlob(const DrawItem& item, const FrameView& frame) {
     drawCalls_ += 1;
 }
 
-void GLRenderer::drawItem(const DrawItem& item, const FrameView& frame, bool outlinePass) {
+void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
     if (item.mesh == nullptr) return;
     GpuMesh& gpu = meshFor(*item.mesh);
     if (gpu.indexCount == 0) return;
@@ -532,10 +532,10 @@ void GLRenderer::render(const FrameView& frame) {
     // Cel outline pass: expand along the normal with front faces culled.
     if (frame.qualityTier >= 2) {
         glCullFace(GL_FRONT);
-        for (const DrawItem& item : frame.items) drawItem(item, frame, true);
+        for (const DrawItem& item : frame.items) drawItem(item, true);
         glCullFace(GL_BACK);
     }
-    for (const DrawItem& item : frame.items) drawItem(item, frame, false);
+    for (const DrawItem& item : frame.items) drawItem(item, false);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (offscreen) {
