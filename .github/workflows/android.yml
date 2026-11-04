@@ -1,0 +1,177 @@
+name: Android
+
+# Storage policy (see docs/GITHUB_ACTIONS_STORAGE.md):
+#  * normal builds upload NO artifacts - they only verify that the APK compiles;
+#  * artifacts are opt-in (workflow_dispatch) and expire after 1 day;
+#  * tagged builds publish to GitHub Releases, which does not consume the
+#    Actions artifact quota at all;
+#  * one concurrency group per ref cancels superseded runs instead of stacking
+#    them up.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      upload_artifact:
+        description: "Upload APK+7z as a workflow artifact (1-day retention, uses the artifact quota)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "26.1.10909125"
+
+jobs:
+  tests:
+    name: Toolchain + engine tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python asset pipeline tests
+        working-directory: tools
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Host engine tests (no GPU required)
+        run: |
+          mkdir -p build
+          g++ -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter \
+            -I native/include \
+            native/src/asset.cpp native/src/animation.cpp native/src/game.cpp \
+            native/src/ai.cpp native/src/perf.cpp native/src/scene.cpp \
+            native/tests/host_tests.cpp -o build/host_tests
+          ./build/host_tests android/app/src/main/assets
+
+  apk:
+    name: Release APK (arm64)
+    needs: tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      STORM_KEYSTORE_BASE64: ${{ secrets.STORM_KEYSTORE_BASE64 }}
+      STORM_STORE_PASSWORD: ${{ secrets.STORM_STORE_PASSWORD }}
+      STORM_KEY_ALIAS: ${{ secrets.STORM_KEY_ALIAS }}
+      STORM_KEY_PASSWORD: ${{ secrets.STORM_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Ensure NDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK/ndk/$NDK_VERSION" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          fi
+          echo "Using NDK $NDK_VERSION"
+
+      - name: Prepare signing key
+        run: |
+          set -euo pipefail
+          if [ -n "${STORM_KEYSTORE_BASE64:-}" ]; then
+            printf '%s' "$STORM_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/storm.jks"
+            echo "Using repository signing key"
+          else
+            # Ephemeral key so CI builds stay installable without storing secrets.
+            # Add STORM_KEYSTORE_BASE64 + passwords to keep a stable signature.
+            keytool -genkeypair -keystore "$RUNNER_TEMP/storm.jks" \
+              -storepass ci-storm-pass -keypass ci-storm-pass \
+              -alias storm -keyalg RSA -keysize 2048 -validity 1000 \
+              -dname "CN=sky, O=pstoandroid, C=ID" > /dev/null 2>&1
+            echo "Generated ephemeral signing key"
+          fi
+
+      - name: Build release APK
+        run: |
+          set -euo pipefail
+          gradle -p android :app:assembleRelease --no-daemon --stacktrace \
+            -Pstorm.storeFile="$RUNNER_TEMP/storm.jks" \
+            -Pstorm.storePassword="${STORM_STORE_PASSWORD:-ci-storm-pass}" \
+            -Pstorm.keyAlias="${STORM_KEY_ALIAS:-storm}" \
+            -Pstorm.keyPassword="${STORM_KEY_PASSWORD:-ci-storm-pass}"
+
+      - name: Verify and package
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          BUILD_TOOLS="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
+          test -f "$APK"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | head -4
+          "$BUILD_TOOLS/zipalign" -c -p 4 "$APK"
+
+          mkdir -p dist
+          NAME="stormrev-${GITHUB_RUN_NUMBER}-arm64-v8a"
+          cp "$APK" "dist/${NAME}.apk"
+          # .so files are stored uncompressed in the APK (mmap at load time), so
+          # an outer 7z archive reproduces the transfer size reduction that the
+          # Play Store gets from its own compression - without recompressing the
+          # APK's already-deflated resources.
+          7z a -t7z -mx=9 -mmt=2 "dist/${NAME}.apk.7z" "dist/${NAME}.apk" > /dev/null
+          (cd dist && sha256sum "${NAME}.apk" "${NAME}.apk.7z" > SHA256SUMS.txt)
+
+          {
+            echo "### Build sizes"
+            echo
+            echo "| file | size |"
+            echo "| --- | --- |"
+            du -h "dist/${NAME}.apk" "dist/${NAME}.apk.7z" | sed 's/\t/ | /; s/^/| /; s/$/ |/'
+            echo
+            echo "APK is installed directly; the .7z is a transfer-only wrapper."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact (opt-in, 1 day)
+        if: inputs.upload_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stormrev-apk-${{ github.run_number }}
+          path: |
+            dist/*.apk.7z
+            dist/SHA256SUMS.txt
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.apk dist/*.apk.7z dist/SHA256SUMS.txt \
+            --title "Storm Revolution $GITHUB_REF_NAME" \
+            --notes "Install the .apk directly. The .apk.7z is the same build with better transfer compression: extract it first (7z x)."

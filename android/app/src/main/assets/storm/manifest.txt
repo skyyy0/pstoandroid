@@ -1,0 +1,14 @@
+# storm manifest v1
+anim fighter attack storm/fighter_attack.sanm
+anim fighter guard storm/fighter_guard.sanm
+anim fighter hit storm/fighter_hit.sanm
+anim fighter idle storm/fighter_idle.sanm
+anim fighter jump storm/fighter_jump.sanm
+anim fighter kick storm/fighter_kick.sanm
+anim fighter run storm/fighter_run.sanm
+arena dojo arena
+character rival rival 1.0
+character rookie fighter 1.0
+mesh arena storm/arena.smesh
+mesh fighter storm/fighter.smesh
+mesh rival storm/rival.smesh

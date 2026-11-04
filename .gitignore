@@ -1,0 +1,29 @@
+# host build artefacts
+/build/
+*.o
+*.a
+*.so
+*.exe
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/release/
+*.apk
+*.aab
+*.jks
+*.keystore
+captures/
+.cxx/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# misc
+.DS_Store
+Thumbs.db
