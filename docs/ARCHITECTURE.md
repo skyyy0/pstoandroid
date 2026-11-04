@@ -63,7 +63,7 @@ Batas 4 langkah mencegah *spiral of death* saat frame drop berat.
 - **Satu program** untuk toon + outline (uniform `uOutlinePass`), satu program
   kecil untuk blob shadow. Shader dikompilasi sekali saat start.
 - **Vertex** 40 byte: posisi, normal, uv, 4 join (u8), 4 bobot (u8).
-- **Bone** diunggah per draw item lewat uniform block std140 (`mat4 uBones[128]`, 8 KiB). Array `mat4[]` biasa akan melewati batas minimum 256 vec4 uniform vertex di perangkat entry-level.
+- **Bone** diunggah per draw item lewat bone palette texture `RGBA32F` 4 texel/bone (`kMaxBones = 128`) dan dibaca dengan `texelFetch` di vertex shader. Uniform `mat4[]`/uniform block akan melewati batas 256 vec4 uniform vertex di perangkat entry-level.
 - **Toon**: 3 band (`smoothstep`), rim, specular bertingkat, fog eksponensial,
   flash merah saat kena hit.
 - **Outline**: pass kedua, `glCullFace(GL_FRONT)`, ekspansi sepanjang normal

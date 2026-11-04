@@ -16,9 +16,7 @@ layout(location = 4) in vec4 aWeights;
 
 uniform mat4 uViewProj;
 uniform mat4 uModel;
-layout(std140) uniform BoneBlock {
-    mat4 uBones[128];
-};
+uniform highp sampler2D uBones;
 uniform int uSkinned;
 uniform float uOutline;
 
@@ -26,14 +24,23 @@ out vec3 vNormal;
 out vec2 vUV;
 out vec3 vWorld;
 
+mat4 fetchBone(int index) {
+    int base = index * 4;
+    vec4 c0 = texelFetch(uBones, ivec2(base + 0, 0), 0);
+    vec4 c1 = texelFetch(uBones, ivec2(base + 1, 0), 0);
+    vec4 c2 = texelFetch(uBones, ivec2(base + 2, 0), 0);
+    vec4 c3 = texelFetch(uBones, ivec2(base + 3, 0), 0);
+    return mat4(c0, c1, c2, c3);
+}
+
 void main() {
     vec4 localPosition = vec4(aPosition, 1.0);
     vec3 localNormal = aNormal;
     if (uSkinned == 1) {
-        mat4 skin = uBones[int(aJoints.x)] * aWeights.x
-                  + uBones[int(aJoints.y)] * aWeights.y
-                  + uBones[int(aJoints.z)] * aWeights.z
-                  + uBones[int(aJoints.w)] * aWeights.w;
+        mat4 skin = fetchBone(int(aJoints.x)) * aWeights.x
+                  + fetchBone(int(aJoints.y)) * aWeights.y
+                  + fetchBone(int(aJoints.z)) * aWeights.z
+                  + fetchBone(int(aJoints.w)) * aWeights.w;
         localPosition = skin * localPosition;
         localNormal = mat3(skin) * aNormal;
     }
@@ -194,6 +201,7 @@ bool GLRenderer::initialize(std::string& error) {
 
     mainUniforms_.viewProj = glGetUniformLocation(mainProgram_, "uViewProj");
     mainUniforms_.model = glGetUniformLocation(mainProgram_, "uModel");
+    mainUniforms_.bones = glGetUniformLocation(mainProgram_, "uBones");
     mainUniforms_.skinned = glGetUniformLocation(mainProgram_, "uSkinned");
     mainUniforms_.outline = glGetUniformLocation(mainProgram_, "uOutline");
     mainUniforms_.cameraPos = glGetUniformLocation(mainProgram_, "uCameraPos");
@@ -222,20 +230,18 @@ bool GLRenderer::initialize(std::string& error) {
 
     createBlobMesh();
 
-    glGenBuffers(1, &boneUbo_);
-    glBindBuffer(GL_UNIFORM_BUFFER, boneUbo_);
-    glBufferData(GL_UNIFORM_BUFFER,
-                 static_cast<GLsizeiptr>(kMaxBones * 16 * sizeof(float)), nullptr,
-                 GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    const GLuint boneBlock = glGetUniformBlockIndex(mainProgram_, "BoneBlock");
-    if (boneBlock == GL_INVALID_INDEX) {
-        error = "BoneBlock uniform block was optimised away";
-        shutdown();
-        return false;
-    }
-    glUniformBlockBinding(mainProgram_, boneBlock, 0);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, boneUbo_);
+    // Bone palette: 4 RGBA32F texels per bone, fetched with texelFetch in the
+    // vertex shader. Texture unit 0 is the palette, unit 1 is albedo.
+    glActiveTexture(GL_TEXTURE0);
+    glGenTextures(1, &boneTexture_);
+    glBindTexture(GL_TEXTURE_2D, boneTexture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, kMaxBones * 4, 1, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUniform1i(mainUniforms_.bones, 0);
+    glUniform1i(mainUniforms_.albedo, 1);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -259,8 +265,8 @@ void GLRenderer::shutdown() {
     if (blobVao_) glDeleteVertexArrays(1, &blobVao_);
     blobVbo_ = blobVao_ = 0;
     destroyTargets();
-    if (boneUbo_) glDeleteBuffers(1, &boneUbo_);
-    boneUbo_ = 0;
+    if (boneTexture_) glDeleteTextures(1, &boneTexture_);
+    boneTexture_ = 0;
     if (mainProgram_) glDeleteProgram(mainProgram_);
     if (blobProgram_) glDeleteProgram(blobProgram_);
     mainProgram_ = blobProgram_ = 0;
@@ -410,11 +416,10 @@ void GLRenderer::uploadBones(const Pose& pose) {
             target[0] = target[5] = target[10] = target[15] = 1.0f;
         }
     }
-    glBindBuffer(GL_UNIFORM_BUFFER, boneUbo_);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0,
-                    static_cast<GLsizeiptr>(boneScratch_.size() * sizeof(float)),
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, boneTexture_);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kMaxBones * 4, 1, GL_RGBA, GL_FLOAT,
                     boneScratch_.data());
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 void GLRenderer::drawBlob(const DrawItem& item, const FrameView& frame) {
@@ -460,9 +465,8 @@ void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
             glUniform1f(mainUniforms_.shininess, material.shininess);
             if (material.albedo >= 0 &&
                 material.albedo < static_cast<int32_t>(gpu.textures.size())) {
-                glActiveTexture(GL_TEXTURE0);
+                glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, gpu.textures[static_cast<size_t>(material.albedo)]);
-                glUniform1i(mainUniforms_.albedo, 0);
                 glUniform1i(mainUniforms_.hasTexture, 1);
             } else {
                 glUniform1i(mainUniforms_.hasTexture, 0);
@@ -512,7 +516,8 @@ void GLRenderer::render(const FrameView& frame) {
     glUniform3f(mainUniforms_.fogColor, 0.09f, 0.10f, 0.16f);
     glUniform1f(mainUniforms_.fogDensity, 0.0075f);
     glUniform1f(mainUniforms_.ambient, 0.42f);
-    glUniform1i(mainUniforms_.albedo, 0);
+    glUniform1i(mainUniforms_.bones, 0);
+    glUniform1i(mainUniforms_.albedo, 1);
 
     // Contact shadows first (blended, no depth writes).
     if (frame.qualityTier >= 2) {

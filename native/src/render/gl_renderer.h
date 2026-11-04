@@ -21,9 +21,10 @@
 
 namespace storm {
 
-// Retail rigs reach ~110 bones. They are uploaded through a std140 uniform
-// block (8 KiB at 128 bones) because a plain mat4[] uniform would exceed the
-// 256 vec4 vertex-uniform minimum on entry-level GLES 3 devices.
+// Retail rigs reach ~110 bones. Skinning matrices go through an RGBA32F bone
+// palette texture (4 texels per bone) instead of uniforms: 128 mat4 uniforms
+// exceed the 256 vec4 vertex-uniform minimum, and some drivers (including
+// SwiftShader) count uniform-block members against the same limit.
 constexpr int kMaxBones = 128;
 
 class GLRenderer {
@@ -50,6 +51,7 @@ private:
     struct MainUniforms {
         GLint viewProj = -1;
         GLint model = -1;
+        GLint bones = -1;
         GLint skinned = -1;
         GLint outline = -1;
         GLint cameraPos = -1;
@@ -86,7 +88,7 @@ private:
 
     GLuint mainProgram_ = 0;
     GLuint blobProgram_ = 0;
-    GLuint boneUbo_ = 0;
+    GLuint boneTexture_ = 0;
     MainUniforms mainUniforms_;
     BlobUniforms blobUniforms_;
 

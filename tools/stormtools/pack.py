@@ -34,9 +34,9 @@ from .glb import Gltf, GltfError, compose_trs, sample_channel
 from .png import PngError, decode_png
 
 MAX_INFLUENCES = 4
-# The GLES renderer uploads bone matrices as one std140 uniform block
-# (uBones[128], mirrored by storm::kMaxBones). Larger rigs are rejected here
-# instead of failing on device.
+# The GLES renderer uploads bone matrices through an RGBA32F palette texture
+# (kMaxBones = 128, mirrored by storm::kMaxBones). Larger rigs are rejected
+# here instead of failing on device.
 MAX_BONES = 128
 
 
