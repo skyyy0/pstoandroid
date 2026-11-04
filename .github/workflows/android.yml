@@ -244,17 +244,15 @@ jobs:
           emulator-options: >-
             -no-window -no-snapshot -no-audio -no-boot-anim
             -gpu swiftshader_indirect -camera-back none -camera-front none
+          # Each line runs in its own shell (no shared variables), so every
+          # command below must stand alone.
           script: |
-            set -eu
-            APK=android/app/build/outputs/apk/debug/app-debug.apk
-            adb install -r "$APK"
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
             adb shell am start -W -n com.sky.stormrev/.MainActivity
             sleep 25
             adb logcat -d -s StormPort:* AndroidRuntime:E | tail -120
-            PID="$(adb shell pidof com.sky.stormrev | tr -d '\r')"
-            echo "app pid: ${PID:-none}"
-            test -n "$PID"
+            adb shell pidof com.sky.stormrev | grep -q .
             adb logcat -d | grep -q "engine ready"
             adb exec-out screencap -p > smoke.png
             ls -l smoke.png
