@@ -89,14 +89,22 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Ensure NDK
+      - name: Ensure NDK and CMake
         run: |
           set -euo pipefail
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          if [ ! -d "$SDK/ndk/$NDK_VERSION" ]; then
-            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          NEED=()
+          [ -d "$SDK/ndk/$NDK_VERSION" ] || NEED+=("ndk;$NDK_VERSION")
+          [ -d "$SDK/cmake/3.22.1" ] || NEED+=("cmake;3.22.1")
+          if [ ${#NEED[@]} -gt 0 ]; then
+            # sdkmanager reads nothing when all licences are already accepted, so
+            # `yes` dies from SIGPIPE; that must not fail the step under pipefail.
+            set +o pipefail
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "${NEED[@]}" > /dev/null
+            set -o pipefail
           fi
-          echo "Using NDK $NDK_VERSION"
+          echo "NDK $NDK_VERSION: $(ls "$SDK/ndk" | tr '\n' ' ')"
+          echo "CMake: $(ls "$SDK/cmake" | tr '\n' ' ')"
 
       - name: Prepare signing key
         run: |
