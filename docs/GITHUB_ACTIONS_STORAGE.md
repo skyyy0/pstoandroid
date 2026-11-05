@@ -186,3 +186,11 @@ default ke repo tempat workflow berjalan, jadi tidak perlu token tambahan.
   hanya membuat release.
 - **`actions/upload-artifact` v3** sudah dihentikan; workflow memakai v4.
 - **Matrix build** memperbanyak artifact; di sini hanya satu ABI, satu job.
+- **Komentar `#` di dalam block scalar YAML (`>` atau `|`) adalah isi, bukan
+  komentar.** Satu komentar yang terselip di `emulator-options` membuat emulator
+  menerima argumen nyasar dan boot menggantung ±38 menit sampai run dibatalkan;
+  catatan panjang ditaruh di atas step, bukan di dalam nilai.
+- **`adb exec-out screencap` bisa menggantung di SwiftShader.** Screenshot
+  bersifat diagnostik dan dibatasi `timeout 45`, sehingga kegagalannya tidak
+  pernah menahan job yang sebenarnya membuktikan engine jalan (assertion
+  `engine ready` di logcat).
