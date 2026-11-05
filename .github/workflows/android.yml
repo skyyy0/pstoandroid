@@ -187,6 +187,10 @@ jobs:
   smoke:
     name: Emulator smoke test (x86_64)
     needs: tests
+    # Booting an emulator is the single most expensive job here (~6-10 min of
+    # runner time). It runs on main/workflow_dispatch, not on every PR: PRs still
+    # get the compile + host-test jobs, which is enough to review a change.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:

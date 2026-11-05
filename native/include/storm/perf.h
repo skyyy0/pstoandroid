@@ -10,9 +10,9 @@ namespace storm {
 
 struct PerfConfig {
     float targetFps = 60.0f;
-    float minScale = 0.55f;
+    float minScale = 0.42f;
     float maxScale = 1.0f;
-    int minTier = 1;
+    int minTier = 0;  // 0 = plain toon (no outline, no shadows)
     int maxTier = 3;
     int windowFrames = 90;
     int evaluateEvery = 24;
@@ -20,6 +20,11 @@ struct PerfConfig {
     float upshiftThreshold = 0.82f;    // p95 below budget * threshold -> upscale
     float downshiftStep = 0.08f;
     float upshiftStep = 0.03f;
+    // After a downshift the governor waits this many frames before handing
+    // quality back. Without the cooldown a device sitting on the threshold
+    // oscillates every evaluation, which reads as stutter even when the
+    // average frame rate is fine.
+    int upshiftCooldownFrames = 45;
     int thermalFramesBeforeCap = 1800;  // ~30s pinned at the floor
 };
 
@@ -63,6 +68,7 @@ private:
     size_t historyCount_ = 0;
     int framesSinceEvaluation_ = 0;
     int slowStreakFrames_ = 0;
+    int upshiftCooldown_ = 0;
     int totalFrames_ = 0;
     float scale_ = 1.0f;
     int tier_ = 3;

@@ -35,8 +35,8 @@ public:
     void render(const FrameView& frame);
 
     int drawCalls() const { return drawCalls_; }
-    int renderWidth() const { return fboWidth_; }
-    int renderHeight() const { return fboHeight_; }
+    int renderWidth() const { return renderWidth_; }
+    int renderHeight() const { return renderHeight_; }
     bool usingOffscreenTarget() const { return fbo_ != 0; }
 
 private:
@@ -46,6 +46,9 @@ private:
         GLuint ibo = 0;
         GLuint indexCount = 0;
         std::vector<GLuint> textures;
+        // Submeshes sorted by material: consecutive draws reuse the bound albedo
+        // texture instead of ping-ponging texture units on every draw.
+        std::vector<const SubMeshData*> drawList;
     };
 
     struct MainUniforms {
@@ -95,8 +98,10 @@ private:
     GLuint fbo_ = 0;
     GLuint colorTexture_ = 0;
     GLuint depthBuffer_ = 0;
-    int fboWidth_ = 0;
+    int fboWidth_ = 0;   // allocation size: always the surface size
     int fboHeight_ = 0;
+    int renderWidth_ = 0;  // active viewport inside the target (resolution scale)
+    int renderHeight_ = 0;
     int surfaceWidth_ = 0;
     int surfaceHeight_ = 0;
 
@@ -106,6 +111,10 @@ private:
 
     std::unordered_map<const Mesh*, GpuMesh> meshes_;
     std::vector<float> boneScratch_;
+    // Pose already present in the bone palette this frame. The outline pass and
+    // the colour pass share it, so each character uploads once instead of twice.
+    const Pose* uploadedPose_ = nullptr;
+    int qualityTier_ = 3;
     int drawCalls_ = 0;
 };
 

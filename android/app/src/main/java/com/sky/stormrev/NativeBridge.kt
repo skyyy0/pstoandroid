@@ -20,7 +20,12 @@ object NativeBridge {
         System.loadLibrary("stormjni")
     }
 
-    external fun initialize(assetManager: AssetManager): Boolean
+    /**
+     * [cores] and [ramMb] let the native governor seed a device profile before
+     * the first frame: entry-level phones start below native resolution instead
+     * of stuttering until the adaptive controller catches up.
+     */
+    external fun initialize(assetManager: AssetManager, cores: Int, ramMb: Int): Boolean
     external fun shutdown()
     external fun resize(width: Int, height: Int)
     external fun frame()

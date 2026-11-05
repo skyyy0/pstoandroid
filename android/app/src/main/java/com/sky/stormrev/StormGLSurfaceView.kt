@@ -1,5 +1,6 @@
 package com.sky.stormrev
 
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
@@ -17,10 +18,16 @@ class StormGLSurfaceView(context: Context) : GLSurfaceView(context) {
     var engineError: String? = null
         private set
 
+    private val cores = Runtime.getRuntime().availableProcessors()
+    private val ramMb: Int = runCatching {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        manager.memoryClass
+    }.getOrDefault(2048)
+
     private val renderer = object : GLSurfaceView.Renderer {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             NativeBridge.shutdown()
-            val ok = NativeBridge.initialize(context.applicationContext.assets)
+            val ok = NativeBridge.initialize(context.applicationContext.assets, cores, ramMb)
             NativeBridge.ready = ok
             engineError = if (ok) null else "Gagal memuat aset storm/. Cek logcat (tag StormPort)."
             if (!ok) Log.e("StormPort", "native init failed")

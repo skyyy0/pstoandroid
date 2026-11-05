@@ -3,6 +3,9 @@ package com.sky.stormrev
 import android.app.Activity
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -10,7 +13,29 @@ import android.widget.FrameLayout
 class MainActivity : Activity() {
 
     private lateinit var surfaceView: StormGLSurfaceView
+    private lateinit var overlay: TouchOverlayView
+    private lateinit var loading: LoadingScreen
     private var thermal: ThermalMonitor? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var startedAt = 0L
+
+    /** Reveals the HUD once the native engine has loaded its first frame. */
+    private val readyPoll = object : Runnable {
+        override fun run() {
+            val elapsed = SystemClock.uptimeMillis() - startedAt
+            if (NativeBridge.ready) {
+                if (elapsed >= 1100L) {
+                    overlay.visibility = View.VISIBLE
+                    loading.dismiss()
+                    return
+                }
+            } else if (elapsed > 20_000L) {
+                loading.showError()
+            }
+            handler.postDelayed(this, 80L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,15 +57,31 @@ class MainActivity : Activity() {
 
         val monitor = ThermalMonitor(this)
         thermal = monitor
+        overlay = TouchOverlayView(this, monitor)
+        // The controls must not appear (or accept input) before the arena is up.
+        overlay.visibility = View.INVISIBLE
         root.addView(
-            TouchOverlayView(this, monitor),
+            overlay,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+
+        loading = LoadingScreen(this)
+        root.addView(
+            loading,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
         setContentView(root)
         applyImmersiveMode()
+
+        startedAt = SystemClock.uptimeMillis()
+        handler.post(readyPoll)
     }
 
     override fun onResume() {
@@ -48,12 +89,24 @@ class MainActivity : Activity() {
         surfaceView.onResume()
         thermal?.start()
         applyImmersiveMode()
+        // The GL context (and therefore the engine) is recreated on resume; keep
+        // watching until the HUD has been revealed at least once.
+        if (overlay.visibility != View.VISIBLE) {
+            handler.removeCallbacks(readyPoll)
+            handler.post(readyPoll)
+        }
     }
 
     override fun onPause() {
         thermal?.stop()
         surfaceView.onPause()
+        handler.removeCallbacks(readyPoll)
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(readyPoll)
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

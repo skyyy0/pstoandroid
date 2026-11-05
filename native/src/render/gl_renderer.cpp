@@ -342,6 +342,17 @@ void GLRenderer::uploadMesh(const Mesh& mesh, GpuMesh& gpu) {
                  mesh.indices.data(), GL_STATIC_DRAW);
     gpu.indexCount = static_cast<GLuint>(mesh.indices.size());
 
+    gpu.drawList.reserve(mesh.submeshes.size());
+    for (const SubMeshData& submesh : mesh.submeshes) {
+        if (submesh.indexCount == 0) continue;
+        gpu.drawList.push_back(&submesh);
+    }
+    std::sort(gpu.drawList.begin(), gpu.drawList.end(),
+              [](const SubMeshData* a, const SubMeshData* b) {
+                  if (a->material != b->material) return a->material < b->material;
+                  return a->indexOffset < b->indexOffset;
+              });
+
     gpu.textures.reserve(mesh.textures.size());
     for (const TextureData& texture : mesh.textures) {
         GLuint id = 0;
@@ -407,19 +418,17 @@ void GLRenderer::resize(int width, int height) {
 }
 
 void GLRenderer::uploadBones(const Pose& pose) {
-    std::memset(boneScratch_.data(), 0, boneScratch_.size() * sizeof(float));
-    for (int bone = 0; bone < kMaxBones; ++bone) {
-        float* target = boneScratch_.data() + bone * 16;
-        if (static_cast<size_t>(bone) < pose.skin.size()) {
-            std::memcpy(target, pose.skin[bone].m, 16 * sizeof(float));
-        } else {
-            target[0] = target[5] = target[10] = target[15] = 1.0f;
-        }
+    const size_t boneCount = std::min(pose.skin.size(), static_cast<size_t>(kMaxBones));
+    if (boneCount == 0) return;
+    // Only the bones the pose actually has are copied and uploaded; unused
+    // palette slots keep their identity matrices from initialize().
+    for (size_t bone = 0; bone < boneCount; ++bone) {
+        std::memcpy(boneScratch_.data() + bone * 16, pose.skin[bone].m, 16 * sizeof(float));
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, boneTexture_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kMaxBones * 4, 1, GL_RGBA, GL_FLOAT,
-                    boneScratch_.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(boneCount * 4), 1, GL_RGBA,
+                    GL_FLOAT, boneScratch_.data());
 }
 
 void GLRenderer::drawBlob(const DrawItem& item, const FrameView& frame) {
@@ -440,7 +449,10 @@ void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
     if (gpu.indexCount == 0) return;
 
     const bool skinned = item.pose != nullptr && !item.pose->skin.empty();
-    if (skinned) uploadBones(*item.pose);
+    if (skinned && uploadedPose_ != item.pose) {
+        uploadBones(*item.pose);
+        uploadedPose_ = item.pose;
+    }
 
     glUniformMatrix4fv(mainUniforms_.model, 1, GL_FALSE, item.model.m);
     glUniform1i(mainUniforms_.skinned, skinned ? 1 : 0);
@@ -449,8 +461,8 @@ void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
     glUniform1f(mainUniforms_.flash, item.flash);
 
     glBindVertexArray(gpu.vao);
-    for (const SubMeshData& submesh : item.mesh->submeshes) {
-        if (submesh.indexCount == 0) continue;
+    for (const SubMeshData* entry : gpu.drawList) {
+        const SubMeshData& submesh = *entry;
         if (outlinePass) {
             glUniform4f(mainUniforms_.baseColor, 0.03f, 0.03f, 0.05f, 1.0f);
             glUniform1i(mainUniforms_.hasTexture, 0);
@@ -460,8 +472,10 @@ void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
             glUniform4f(mainUniforms_.baseColor, material.baseColor.x, material.baseColor.y,
                         material.baseColor.z, material.baseColor.w);
             glUniform4f(mainUniforms_.rimColor, material.rimColor.x, material.rimColor.y,
-                        material.rimColor.z, material.rimColor.w);
-            glUniform1f(mainUniforms_.specular, material.specular);
+                        material.rimColor.z,
+                        qualityTier_ >= 3 ? material.rimColor.w : 0.0f);
+            glUniform1f(mainUniforms_.specular,
+                        qualityTier_ >= 3 ? material.specular : 0.0f);
             glUniform1f(mainUniforms_.shininess, material.shininess);
             if (material.albedo >= 0 &&
                 material.albedo < static_cast<int32_t>(gpu.textures.size())) {
@@ -487,20 +501,27 @@ void GLRenderer::drawItem(const DrawItem& item, bool outlinePass) {
 void GLRenderer::render(const FrameView& frame) {
     if (mainProgram_ == 0 || surfaceWidth_ <= 0 || surfaceHeight_ <= 0) return;
 
-    const float scale = frame.resolutionScale > 0.1f ? frame.resolutionScale : 1.0f;
-    const int targetWidth = std::max(1, static_cast<int>(surfaceWidth_ * scale));
-    const int targetHeight = std::max(1, static_cast<int>(surfaceHeight_ * scale));
-    if (fbo_ == 0 || targetWidth != fboWidth_ || targetHeight != fboHeight_) {
-        if (!createTargets(targetWidth, targetHeight)) {
+    const float scale = std::clamp(frame.resolutionScale, 0.25f, 1.0f);
+    // The offscreen target is allocated once per surface size. Changing the
+    // internal resolution only moves the viewport, so the governor can retune
+    // every few frames without reallocating textures (a driver stall on weak
+    // GPUs, and the main source of visible hitching during fights).
+    if (fbo_ == 0 || fboWidth_ != surfaceWidth_ || fboHeight_ != surfaceHeight_) {
+        if (!createTargets(surfaceWidth_, surfaceHeight_)) {
             // Fall back to the default framebuffer rather than showing nothing.
             destroyTargets();
         }
     }
+    renderWidth_ = std::max(1, static_cast<int>(surfaceWidth_ * scale));
+    renderHeight_ = std::max(1, static_cast<int>(surfaceHeight_ * scale));
+    qualityTier_ = frame.qualityTier;
+    uploadedPose_ = nullptr;
 
     drawCalls_ = 0;
     const bool offscreen = fbo_ != 0;
     glBindFramebuffer(GL_FRAMEBUFFER, offscreen ? fbo_ : 0);
-    glViewport(0, 0, offscreen ? fboWidth_ : surfaceWidth_, offscreen ? fboHeight_ : surfaceHeight_);
+    glViewport(0, 0, offscreen ? renderWidth_ : surfaceWidth_,
+               offscreen ? renderHeight_ : surfaceHeight_);
 
     // Warm dusk sky matching the stage lighting.
     glClearColor(0.09f, 0.10f, 0.16f, 1.0f);
@@ -535,7 +556,7 @@ void GLRenderer::render(const FrameView& frame) {
     glUniformMatrix4fv(mainUniforms_.viewProj, 1, GL_FALSE, frame.viewProjection.m);
 
     // Cel outline pass: expand along the normal with front faces culled.
-    if (frame.qualityTier >= 2) {
+    if (frame.qualityTier >= 1) {
         glCullFace(GL_FRONT);
         for (const DrawItem& item : frame.items) drawItem(item, true);
         glCullFace(GL_BACK);
@@ -546,7 +567,7 @@ void GLRenderer::render(const FrameView& frame) {
     if (offscreen) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, fboWidth_, fboHeight_, 0, 0, surfaceWidth_, surfaceHeight_,
+        glBlitFramebuffer(0, 0, renderWidth_, renderHeight_, 0, 0, surfaceWidth_, surfaceHeight_,
                           GL_COLOR_BUFFER_BIT, GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }

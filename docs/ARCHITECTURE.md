@@ -69,12 +69,22 @@ Batas 4 langkah mencegah *spiral of death* saat frame drop berat.
 - **Outline**: pass kedua, `glCullFace(GL_FRONT)`, ekspansi sepanjang normal
   0.018 unit.
 - **Dynamic resolution**: render ke FBO `RGBA8 + DEPTH24`, lalu
-  `glBlitFramebuffer` ke default framebuffer. Gagal membuat FBO → jatuh ke
+  `glBlitFramebuffer` ke default framebuffer. FBO dialokasikan **sekali per
+  ukuran surface**; perubahan skala hanya menggeser `glViewport` dan area blit,
+  jadi governor bisa menurunkan resolusi tanpa realokasi tekstur (penyebab
+  hitch paling kentara di GPU entry-level). Gagal membuat FBO → jatuh ke
   framebuffer default, bukan layar hitam.
 - **Bayangan**: blob kontak di bawah karakter (murah, tidak butuh shadow map).
   Shadow map/cascade ada di roadmap.
-- **Tier**: 1 = tanpa outline/shadow, 2 = outline + blob, 3 = penuh (specular
-  dan rim aktif).
+- **Tier**: 0 = toon polos, 1 = +outline, 2 = +blob shadow, 3 = +rim/specular.
+  Governor memilih tier ini bersama skala resolusi; semuanya hanya mengubah
+  uniform/pass, bukan shader atau alokasi.
+- **Upload bone**: setiap pose diunggah sekali per frame (bukan sekali per pass
+  outline + warna) dan hanya sejumlah bone yang benar-benar dipakai.
+- **Profil perangkat**: saat init, jumlah core, RAM class, dan string GPU dipakai
+  untuk memilih `PerfConfig`. GPU entry-level (Adreno < 640, Mali-G5x, PowerVR)
+  start di skala 0.72 dan boleh turun ke 0.40, sehingga frame pertama sudah
+  lancar, bukan menunggu governor menyesuaikan diri.
 
 ## Format runtime
 

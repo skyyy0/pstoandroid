@@ -6,7 +6,9 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -86,12 +88,68 @@ void logError(const std::string& message) {
     __android_log_print(ANDROID_LOG_ERROR, kTag, "%s", message.c_str());
 }
 
+int numberAfter(const std::string& text, const std::string& token) {
+    const size_t pos = text.find(token);
+    if (pos == std::string::npos) return -1;
+    size_t index = pos + token.size();
+    while (index < text.size() && !std::isdigit(static_cast<unsigned char>(text[index]))) ++index;
+    int value = 0;
+    bool any = false;
+    while (index < text.size() && std::isdigit(static_cast<unsigned char>(text[index]))) {
+        value = value * 10 + (text[index] - '0');
+        ++index;
+        any = true;
+    }
+    return any ? value : -1;
+}
+
+// Cheap GPU classification: Adreno 6xx below 640 (610/619/620...) and Mali-G5x
+// are the parts that ship in entry-level phones such as the Snapdragon 685.
+bool entryLevelGpu(const char* rendererName) {
+    if (rendererName == nullptr) return false;
+    std::string name(rendererName);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name.find("powervr") != std::string::npos) return true;
+    const int adreno = numberAfter(name, "adreno");
+    if (adreno > 0 && adreno < 640) return true;
+    const int mali = numberAfter(name, "mali-g");
+    if (mali > 0 && mali <= 57) return true;
+    return false;
+}
+
+// The governor starts at maxScale, so a weak GPU must not begin at native
+// resolution: starting too high guarantees a visible stutter in the first
+// seconds before the dynamic-resolution loop catches up.
+storm::PerfConfig deviceProfile(int cores, int ramMb, const char* rendererName) {
+    storm::PerfConfig config;
+    const bool entry = entryLevelGpu(rendererName) || cores <= 6 || ramMb <= 3072;
+    if (entry) {
+        config.maxScale = 0.72f;
+        config.minScale = 0.4f;
+        config.evaluateEvery = 18;
+        config.upshiftStep = 0.02f;
+        config.upshiftCooldownFrames = 60;
+        config.thermalFramesBeforeCap = 900;
+    } else if (cores <= 8 && ramMb <= 6144) {
+        config.maxScale = 0.9f;
+        config.minScale = 0.5f;
+        config.upshiftCooldownFrames = 45;
+    }
+    __android_log_print(ANDROID_LOG_INFO, kTag,
+                        "device profile: cores=%d ram=%dMB gpu=%s entry=%d startScale=%.2f",
+                        cores, ramMb, rendererName ? rendererName : "?", entry ? 1 : 0,
+                        static_cast<double>(config.maxScale));
+    return config;
+}
+
 }  // namespace
 
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_com_sky_stormrev_NativeBridge_initialize(JNIEnv* env, jobject /*thiz*/, jobject assetManager) {
+Java_com_sky_stormrev_NativeBridge_initialize(JNIEnv* env, jobject /*thiz*/, jobject assetManager,
+                                              jint cores, jint ramMb) {
     g_engine = std::make_unique<Engine>();
     if (assetManager == nullptr) {
         logError("assets manager is null");
@@ -130,6 +188,9 @@ Java_com_sky_stormrev_NativeBridge_initialize(JNIEnv* env, jobject /*thiz*/, job
 
     storm::MatchConfig config;
     g_engine->world.configure(config);
+    g_engine->perf = storm::PerfGovernor(deviceProfile(
+        static_cast<int>(cores), static_cast<int>(ramMb),
+        reinterpret_cast<const char*>(glGetString(GL_RENDERER))));
     g_engine->perf.reset();
     g_engine->lastFrame = std::chrono::steady_clock::now();
     g_engine->ready = true;

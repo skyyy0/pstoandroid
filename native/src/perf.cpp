@@ -18,6 +18,7 @@ void PerfGovernor::reset() {
     historyCount_ = 0;
     framesSinceEvaluation_ = 0;
     slowStreakFrames_ = 0;
+    upshiftCooldown_ = 0;
     totalFrames_ = 0;
     scale_ = config_.maxScale;
     tier_ = config_.maxTier;
@@ -40,8 +41,10 @@ void PerfGovernor::setThermalPressure(float pressure) {
             resolutionDirty_ = true;
         }
         tier_ = config_.minTier;
+        upshiftCooldown_ = config_.upshiftCooldownFrames;
     } else if (thermalPressure_ >= 0.6f) {
         tier_ = std::max(config_.minTier, tier_ - 1);
+        upshiftCooldown_ = config_.upshiftCooldownFrames;
     } else if (thermalPressure_ <= 0.35f && thermalCapped_) {
         // Cooled down: hand control back to the frame-time governor.
         thermalCapped_ = false;
@@ -93,9 +96,11 @@ void PerfGovernor::evaluate() {
     const float budget = 1000.0f / activeTargetFps_;
     const bool tooSlow = p95Ms_ > budget * config_.downshiftThreshold;
     const bool plentyOfHeadroom = p95Ms_ < budget * config_.upshiftThreshold;
+    if (upshiftCooldown_ > 0) upshiftCooldown_ -= config_.evaluateEvery;
 
     if (tooSlow) {
         slowStreakFrames_ += config_.evaluateEvery;
+        upshiftCooldown_ = config_.upshiftCooldownFrames;
         if (scale_ > config_.minScale + 1e-4f) {
             scale_ = std::max(config_.minScale, scale_ - config_.downshiftStep);
             resolutionDirty_ = true;
@@ -109,7 +114,7 @@ void PerfGovernor::evaluate() {
             thermalCapped_ = true;
             p95Ms_ = 1000.0f / activeTargetFps_;
         }
-    } else if (plentyOfHeadroom) {
+    } else if (plentyOfHeadroom && upshiftCooldown_ <= 0) {
         slowStreakFrames_ = 0;
         if (scale_ < config_.maxScale - 1e-4f) {
             scale_ = std::min(config_.maxScale, scale_ + config_.upshiftStep);
