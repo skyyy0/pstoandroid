@@ -247,9 +247,11 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: >-
             -no-window -no-snapshot -no-audio -no-boot-anim
-            -gpu swiftshader_indirect -camera-back none -camera-front none
-          # Each line runs in its own shell (no shared variables), so every
-          # command below must stand alone.
+            -gpu swiftshader_indirect -camera-back none -camera-front none            # Each line runs in its own shell (no shared variables), so every
+            # command below must stand alone. The screenshot is best-effort:
+            # screencap occasionally stalls on SwiftShader, and a stalled
+            # screenshot must not fail the job that actually proves the engine
+            # rendered (the logcat assertion above).
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
@@ -258,7 +260,7 @@ jobs:
             adb logcat -d -s StormPort:* AndroidRuntime:E | tail -120
             adb shell pidof com.sky.stormrev | grep -q .
             adb logcat -d | grep -q "engine ready"
-            adb exec-out screencap -p > smoke.png
+            timeout 45 adb exec-out screencap -p > smoke.png || true
             ls -l smoke.png
 
       - name: Upload smoke screenshot
