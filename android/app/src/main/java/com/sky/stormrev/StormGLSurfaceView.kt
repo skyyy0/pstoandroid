@@ -19,10 +19,16 @@ class StormGLSurfaceView(context: Context) : GLSurfaceView(context) {
         private set
 
     private val cores = Runtime.getRuntime().availableProcessors()
+
+    // Total physical RAM in MB. NOT ActivityManager.memoryClass: that is the
+    // per-app Java heap limit, which is 192-512 MB on every phone and would
+    // label even a 12 GB flagship as low-RAM.
     private val ramMb: Int = runCatching {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        manager.memoryClass
-    }.getOrDefault(2048)
+        val info = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(info)
+        (info.totalMem / (1024L * 1024L)).toInt()
+    }.getOrDefault(4096)
 
     private val renderer = object : GLSurfaceView.Renderer {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {

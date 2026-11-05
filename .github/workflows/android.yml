@@ -236,6 +236,13 @@ jobs:
 
       # This is the only check that proves the APK actually boots and renders:
       # the emulator runs the real GLES 3 renderer through SwiftShader.
+      #
+      # Each script line runs in its own shell (no shared variables), so every
+      # command must stand alone. The screenshot is best-effort: screencap
+      # occasionally stalls on SwiftShader, and a stalled screenshot must not
+      # fail the job that actually proves the engine rendered (the logcat
+      # assertion above it). These notes belong here: a '#' line inside a YAML
+      # block scalar is literal text, not a comment.
       - name: Install, launch, assert engine ready
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -247,11 +254,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: >-
             -no-window -no-snapshot -no-audio -no-boot-anim
-            -gpu swiftshader_indirect -camera-back none -camera-front none            # Each line runs in its own shell (no shared variables), so every
-            # command below must stand alone. The screenshot is best-effort:
-            # screencap occasionally stalls on SwiftShader, and a stalled
-            # screenshot must not fail the job that actually proves the engine
-            # rendered (the logcat assertion above).
+            -gpu swiftshader_indirect -camera-back none -camera-front none
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
