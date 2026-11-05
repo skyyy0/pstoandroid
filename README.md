@@ -112,13 +112,27 @@ keduanya — dan supaya build selesai cepat:
 | R8 + `shrinkResources` + `debugSymbolLevel = "none"` | APK lebih kecil, upload/unduh lebih cepat |
 | `gradle --no-daemon`, heap **2 GB** (`android/gradle.properties`) | runner hanya punya ±7 GB RAM; daemon + heap besar membuat OOM/killer |
 | cache **hanya** Gradle (`gradle/actions/setup-gradle`) | cache punya kuota terpisah; NDK/SDK penuh (ratusan MB) tidak di-cache karena cepat basi dan memakan kuota |
-| smoke test emulator **tidak** jalan di PR | boot emulator ±6–10 menit; PR cukup compile + host test |
+| smoke test emulator **tidak** jalan di PR maupun di build tag | boot emulator ±6–10 menit; PR cukup compile + host test, dan build tag mengemas commit yang sudah di-smoke di `main` |
 | job `tests` → `apk`/`smoke` paralel | gerbang cepat dulu, build berat berjalan bersamaan |
 | `7z -mx=9 -mmt=2` hanya untuk transfer | `.so` disimpan uncompressed di APK, jadi 7z yang mengecilkan; `-mmt=2` membatasi CPU runner |
 
 Ringkasnya: **nol byte artifact** untuk build harian, build hanya jalan saat ada
-perubahan kode, dan pekerjaan terberat (emulator) di-skip di PR. Detail lengkap,
-hitungan kuota, dan cara pruning: `docs/GITHUB_ACTIONS_STORAGE.md`.
+perubahan kode, dan pekerjaan terberat (emulator) di-skip di PR dan build tag.
+Detail lengkap, hitungan kuota, dan cara pruning: `docs/GITHUB_ACTIONS_STORAGE.md`.
+
+### Rilis versi bebas (lewat tag)
+
+Tidak perlu unggah artifact sama sekali: satu tag menghasilkan GitHub Release
+berisi APK, `.apk.7z`, dan `SHA256SUMS.txt`.
+
+```bash
+git tag v1.0.0-free
+git push origin v1.0.0-free
+```
+
+Workflow berjalan ±4 menit (tests + APK, tanpa emulator) lalu menerbitkan
+Release. Agar hemat kuota, jangan push tag untuk commit yang belum pernah lolos
+smoke di `main`; aset Release sendiri tidak dihitung ke kuota 500 MB.
 
 ## Batas kejujuran proyek ini
 

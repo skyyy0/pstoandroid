@@ -11,6 +11,10 @@ name: Android
 on:
   push:
     branches: [main]
+    # Tag pushes build the same commit that was already smoke-tested on main,
+    # then attach the APK to a GitHub Release. Releases do not spend the
+    # artifact quota at all, which is why they are the default way to ship.
+    tags: ["v*"]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -189,8 +193,10 @@ jobs:
     needs: tests
     # Booting an emulator is the single most expensive job here (~6-10 min of
     # runner time). It runs on main/workflow_dispatch, not on every PR: PRs still
-    # get the compile + host-test jobs, which is enough to review a change.
-    if: github.event_name != 'pull_request'
+    # get the compile + host-test jobs, which is enough to review a change. Tag
+    # builds skip it too - they package a commit that main already booted, and a
+    # release should cost the free quota as little as possible.
+    if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
