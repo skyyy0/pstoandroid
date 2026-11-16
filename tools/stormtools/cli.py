@@ -5,6 +5,9 @@ Examples
 --------
     python -m stormtools cpk list data.cpk
     python -m stormtools cpk extract data.cpk out/ --only chara --ext .xfbin
+    python -m stormtools xfbin list out/chara/naruto.xfbin
+    python -m stormtools xfbin extract out/chara/naruto.xfbin out/chara/naruto_chunks
+    python -m stormtools retail unpack data.cpk out/ --only chara --ext .xfbin
     python -m stormtools scan out/chara/naruto.xfbin
     python -m stormtools pack chara/naruto.glb out/ --name naruto --manifest out/manifest.txt
     python -m stormtools demo --target android/app/src/main
@@ -18,7 +21,7 @@ import os
 import sys
 from typing import List
 
-from . import demo_assets
+from . import demo_assets, retail, xfbin
 from .cpk import CpkError, open_cpk
 from .formats import describe_mesh, read_anim, read_mesh
 from .pack import PackError, pack_glb
@@ -62,6 +65,52 @@ def _cmd_scan(args) -> int:
         if args.verbose:
             for hit in result.hits:
                 print(f"  {hit.offset:08x}  {hit.signature.decode('latin-1'):10s} {hit.description}")
+    return 0
+
+
+def _cmd_xfbin_list(args) -> int:
+    for path in args.paths:
+        try:
+            container = xfbin.open_xfbin(path)
+        except (xfbin.XfbinError, OSError) as exc:
+            print(f"error: {path}: {exc}", file=sys.stderr)
+            return 1
+        print(f"{path}: {container.summary()}")
+        for chunk in container.chunks:
+            print(f"  {chunk.describe()}")
+        for warning in container.warnings:
+            print(f"  warning: {warning}")
+    return 0
+
+
+def _cmd_xfbin_extract(args) -> int:
+    for path in args.paths:
+        try:
+            container = xfbin.open_xfbin(path)
+            written = container.extract(args.destination)
+        except (xfbin.XfbinError, OSError) as exc:
+            print(f"error: {path}: {exc}", file=sys.stderr)
+            return 1
+        print(f"{path}: wrote {len(written)} chunk file(s) to {args.destination}")
+    return 0
+
+
+def _cmd_retail(args) -> int:
+    try:
+        summary = retail.unpack(
+            args.archive,
+            args.destination,
+            only=args.only,
+            extensions=args.ext.split(",") if args.ext else None,
+            limit=args.limit,
+            keep_raw=not args.no_raw,
+            split=not args.no_split,
+        )
+    except (CpkError, retail.RetailError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(retail.summarize(summary))
+    print(f"report: {os.path.join(args.destination, 'report.json')}")
     return 0
 
 
@@ -127,10 +176,34 @@ def build_parser() -> argparse.ArgumentParser:
     cpk_extract.add_argument("--limit", type=int, default=0)
     cpk_extract.set_defaults(func=_cmd_cpk_extract)
 
+    xfbin_parser = subparsers.add_parser("xfbin", help="inspect/split NUCC xfbin containers")
+    xfbin_sub = xfbin_parser.add_subparsers(dest="xfbin_command", required=True)
+    xfbin_list = xfbin_sub.add_parser("list", help="list containers and their chunks")
+    xfbin_list.add_argument("paths", nargs="+")
+    xfbin_list.set_defaults(func=_cmd_xfbin_list)
+    xfbin_extract = xfbin_sub.add_parser("extract", help="write every chunk payload")
+    xfbin_extract.add_argument("paths", nargs="+", help="xfbin files to split")
+    xfbin_extract.add_argument("destination")
+    xfbin_extract.set_defaults(func=_cmd_xfbin_extract)
+
+    retail_parser = subparsers.add_parser(
+        "retail", help="unpack a retail data.cpk: CRILAYLA decode + xfbin split")
+    retail_sub = retail_parser.add_subparsers(dest="retail_command", required=True)
+    retail_unpack = retail_sub.add_parser("unpack", help="decode and split an archive")
+    retail_unpack.add_argument("archive")
+    retail_unpack.add_argument("destination")
+    retail_unpack.add_argument("--only", default=None)
+    retail_unpack.add_argument("--ext", default=None, help="comma separated extension filter")
+    retail_unpack.add_argument("--limit", type=int, default=0)
+    retail_unpack.add_argument("--no-raw", action="store_true", help="skip writing the packed files")
+    retail_unpack.add_argument("--no-split", action="store_true", help="skip xfbin splitting")
+    retail_unpack.set_defaults(func=_cmd_retail)
+
     scan = subparsers.add_parser("scan", help="locate CC2/CriWare signatures in files")
     scan.add_argument("paths", nargs="+")
     scan.add_argument("-v", "--verbose", action="store_true")
     scan.set_defaults(func=_cmd_scan)
+
 
     pack = subparsers.add_parser("pack", help="convert glTF 2.0 to .smesh/.sanm")
     pack.add_argument("inputs", nargs="+")

@@ -1,27 +1,67 @@
 # Pipeline aset
 
 Aset retail tidak disertakan di repo. Pipeline ini menerima data dari **game yang
-Anda miliki sendiri** dan mengubahnya menjadi paket yang dibaca engine.
+Anda miliki sendiri**, mengeluarkannya dari container aslinya, dan mengubahnya
+menjadi paket yang dibaca engine.
 
-## Alur
+Dua jalur yang berbeda, jangan dicampur:
+
+| jalur | status | dipakai untuk |
+| --- | --- | --- |
+| **retail** — `data.cpk` → CRILAYLA → XFBIN → chunk | container nyata, parser payload belum ada | target sebenarnya |
+| **glTF** — `.glb` → `.smesh`/`.sanm` | nyata dan teruji | membawa hasil impor/konversi ke engine |
+
+## Alur retail
 
 ```
 data.cpk
-  │  python3 -m stormtools cpk list data.cpk
-  │  python3 -m stormtools cpk extract data.cpk out/
+  │  python3 -m stormtools cpk list data.cpk          # inventaris entri
+  │  python3 -m stormtools retail unpack data.cpk out/ # decode + split
   ▼
-*.xfbin  (mesh, animasi, tekstur, material)
-  │  python3 -m stormtools scan out/            # inventaris signature
-  │  Blender + XFBIN importer (tool komunitas)
-  ▼
-*.glb (glTF 2.0, rig + animasi)
-  │  python3 -m stormtools pack model.glb \
-  │      --out android/app/src/main/assets/storm \
-  │      --manifest android/app/src/main/assets/storm/manifest.txt \
-  │      --prefix storm
-  ▼
-*.smesh / *.sanm / manifest.txt  →  APK
+out/chara/naruto.xfbin               (berkas utuh, sudah didekode)
+out/chara/naruto_chunks/000_body.nud (payload per chunk, apa adanya)
+out/chara/naruto_chunks/001_face.nut
+out/chara/naruto_chunks/002_idle00.anm
+out/report.json                      (tipe, ukuran, peringatan struktur)
 ```
+
+Contoh:
+
+```bash
+cd tools
+python3 -m stormtools cpk list /path/data.cpk | head -20
+python3 -m stormtools retail unpack /path/data.cpk /tmp/storm --only chara --ext .xfbin --limit 50
+python3 -m stormtools xfbin list /tmp/storm/chara/naruto.xfbin
+```
+
+`retail unpack` **tidak** menafsirkan isi `.nud`/`.nut`/`.anm`: payload ditulis
+persis seperti di container, dan `report.json` mencatat setiap chunk. Chunk tanpa
+parser tetap bisa diperiksa dengan tool komunitas (xfbin_lib/UNSME) tanpa perlu
+mengekstrak ulang CPK.
+
+Batasan yang harus diingat: `report.json` yang menunjukkan `"chunks": 0` atau
+`"failed" > 0` untuk berkas yang seharusnya berisi model berarti layout belum
+cocok. Perbaiki parser — jangan melonggarkan validasi agar "kelihatan jalan".
+
+## Alur konversi ke engine
+
+```
+chunk retail → (importer, belum ada) → .glb
+.glb → python3 -m stormtools pack → .smesh / .sanm + manifest.txt
+     → storage/port/ di perangkat  atau  android/app/src/main/assets/storm/
+```
+
+Paket hasil konversi taruh di storage aplikasi (tanpa membangun ulang APK):
+
+```
+Android/data/com.sky.stormrev/files/port/
+    manifest.txt
+    chara/naruto.smesh
+    chara/naruto_idle.sanm
+```
+
+Saat init engine mencoba berurutan: `port/` di storage → `assets/port/` →
+`assets/storm/` (harness). Logcat mencetak manifest yang dipakai.
 
 ## Perintah yang tersedia
 
@@ -29,25 +69,32 @@ data.cpk
 cd tools
 
 python3 -m stormtools cpk list  /path/data.cpk
-python3 -m stormtools cpk extract /path/data.cpk /tmp/storm_raw
-python3 -m stormtools scan /tmp/storm_raw
+python3 -m stormtools cpk extract /path/data.cpk /tmp/storm_raw   # decode CRILAYLA
+python3 -m stormtools retail unpack /path/data.cpk /tmp/storm     # + split xfbin
+python3 -m stormtools xfbin list /tmp/storm/chara/naruto.xfbin
+python3 -m stormtools xfbin extract /tmp/storm/chara/naruto.xfbin /tmp/storm/naruto_chunks
+python3 -m stormtools scan /tmp/storm
 python3 -m stormtools info android/app/src/main/assets/storm/fighter.smesh
-python3 -m stormtools pack hero.glb --out ../android/app/src/main/assets/storm \
-    --manifest ../android/app/src/main/assets/storm/manifest.txt --prefix storm --scale 1.0
-python3 -m stormtools demo          # regenerate aset demo orisinal
+
+python3 -m stormtools pack hero.glb tmp/out \
+    --name hero \
+    --manifest tmp/out/manifest.txt \
+    --scale 1.0
+
+python3 -m stormtools demo          # regenerate aset harness (bukan retail)
 ```
 
-`data.cpk` yang memakai entri `CRILAYLA` terkompresi akan ditolak dengan pesan
-jelas: repo ini sengaja tidak menebak-nebak decoder LZ yang belum tervalidasi.
-Gunakan CriPakTools untuk mengekstrak, lalu lanjutkan dengan `scan`/`pack`.
+Entri CPK yang terkompresi didekode oleh `crilayla.py`. Frame yang ukurannya tidak
+konsisten dengan `ExtractSize` ditolak dengan pesan jelas, bukan dipotong diam-diam.
 
 ## Manifest
 
-Grammar di `android/app/src/main/assets/storm/manifest.txt`:
+Grammar di `android/app/src/main/assets/storm/manifest.txt` (path relatif
+terhadap root sumber aset yang dipilih):
 
 ```
-mesh <nama> <path relatif assets>
-anim <nama mesh> <nama clip> <path relatif assets>
+mesh <nama> <path>
+anim <nama mesh> <nama clip> <path>
 character <id> <nama mesh> <skala>
 arena <id> <nama mesh>
 ```
@@ -104,11 +151,11 @@ Rencana pengurangan ukuran tanpa menurunkan kualitas (belum diimplementasikan):
 | duplikat | tidak dicek | hash tekstur/mesh, pakai satu | 5–15% |
 
 Langkah pertama yang berdampak besar dan murah: ASTC untuk tekstur dan Opus untuk
-audio. Keduanya butuh perubahan loader, jadi dicatat sebagai fase P5 di
+audio. Keduanya butuh perubahan loader, jadi dicatat sebagai fase P6 di
 `ROADMAP.md`.
 
-## Reproduksi aset demo
+## Reproduksi aset harness
 
 `python3 -m stormtools demo` menghasilkan 10 file (132 KB): dua karakter 17
 tulang, satu arena, tujuh clip. Semua prosedural, tanpa IP, dan dipakai oleh test
-host maupun APK.
+host maupun APK. Ini **alat uji regresi**, bukan konten game.

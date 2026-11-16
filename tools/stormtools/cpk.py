@@ -4,11 +4,10 @@ Naruto Storm ships its whole data tree inside ``data.cpk``.  A CPK is a UTF
 table (CRI's generic table format) describing rows with columns such as
 ``FileName``, ``DirName``, ``FileOffset``, ``FileSize`` and ``ExtractSize``.
 
-This module implements the UTF table reader and uncompressed extraction.  Rows
-whose ``ExtractSize`` differs from ``FileSize`` are CRILAYLA-compressed in the
-retail files; those are reported explicitly instead of being decoded, because a
-half-verified LZ decoder silently corrupting assets would be worse than asking
-for the community extractor documented in docs/ASSET_PIPELINE.md.
+This module implements the UTF table reader and extraction.  Rows whose
+``ExtractSize`` differs from ``FileSize`` hold a CRILAYLA frame and are decoded
+with :mod:`stormtools.crilayla`; a frame whose sizes or bit stream do not check
+out raises instead of producing a truncated asset.
 
 References: the UTF layout used by CRIWARE (see CriPakTools / CriFsV2Lib).
 """
@@ -16,10 +15,12 @@ References: the UTF layout used by CRIWARE (see CriPakTools / CriFsV2Lib).
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .binary import BinaryError, Reader
+from .crilayla import CrilaylaError, decompress as decompress_crilayla, is_crilayla
 
 # UTF storage type = low nibble of the column flags byte.
 _UTF_U8, _UTF_S8, _UTF_U16, _UTF_S16 = 0x0, 0x1, 0x2, 0x3
@@ -231,15 +232,20 @@ class Cpk:
         return [e for e in self.entries if needle in e.path.lower()]
 
     def read(self, entry: CpkEntry) -> bytes:
-        if entry.compressed:
-            raise CpkError(
-                f"{entry.path}: entry is CRILAYLA-compressed "
-                f"({entry.size} -> {entry.extract_size} bytes); "
-                "use the external extractor described in docs/ASSET_PIPELINE.md"
-            )
         if entry.offset + entry.size > len(self._data):
             raise CpkError(f"{entry.path}: data past end of archive")
-        return self._data[entry.offset:entry.offset + entry.size]
+        payload = self._data[entry.offset:entry.offset + entry.size]
+        if not entry.compressed:
+            return payload
+        if not is_crilayla(payload):
+            raise CpkError(
+                f"{entry.path}: FileSize {entry.size} != ExtractSize {entry.extract_size} "
+                "but the payload is not a CRILAYLA frame"
+            )
+        try:
+            return decompress_crilayla(payload, expected_size=entry.extract_size)
+        except CrilaylaError as exc:
+            raise CpkError(f"{entry.path}: {exc}") from exc
 
     def extract_all(
         self,
@@ -258,7 +264,7 @@ class Cpk:
             try:
                 payload = self.read(entry)
             except CpkError as exc:
-                print(f"[skip] {exc}")
+                print(f"[skip] {exc}", file=sys.stderr)
                 continue
             target = os.path.join(destination, entry.path.replace("\\", "/"))
             os.makedirs(os.path.dirname(target) or destination, exist_ok=True)

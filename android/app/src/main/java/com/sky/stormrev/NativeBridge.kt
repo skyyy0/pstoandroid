@@ -24,8 +24,12 @@ object NativeBridge {
      * [cores] and [ramMb] let the native governor seed a device profile before
      * the first frame: entry-level phones start below native resolution instead
      * of stuttering until the adaptive controller catches up.
+     *
+     * [portDir] is the writable directory where assets converted from the user's
+     * retail copy are unpacked (see docs/ASSET_PIPELINE.md).  It is searched
+     * before the APK assets, so retail content never has to ship in the APK.
      */
-    external fun initialize(assetManager: AssetManager, cores: Int, ramMb: Int): Boolean
+    external fun initialize(assetManager: AssetManager, cores: Int, ramMb: Int, portDir: String): Boolean
     external fun shutdown()
     external fun resize(width: Int, height: Int)
     external fun frame()

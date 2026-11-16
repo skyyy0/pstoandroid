@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
 import android.util.Log
+import java.io.File
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -33,9 +34,16 @@ class StormGLSurfaceView(context: Context) : GLSurfaceView(context) {
     private val renderer = object : GLSurfaceView.Renderer {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             NativeBridge.shutdown()
-            val ok = NativeBridge.initialize(context.applicationContext.assets, cores, ramMb)
+            // Retail assets extracted on the device live here, outside the APK:
+            //   <app storage>/port/manifest.txt + converted packages
+            val appContext = context.applicationContext
+            val base = appContext.getExternalFilesDir(null) ?: appContext.filesDir
+            val portDir = File(base, "port")
+            portDir.mkdirs()
+            val ok = NativeBridge.initialize(appContext.assets, cores, ramMb, portDir.absolutePath)
             NativeBridge.ready = ok
-            engineError = if (ok) null else "Gagal memuat aset storm/. Cek logcat (tag StormPort)."
+            engineError = if (ok) null else
+                "Tidak ada paket aset di ${portDir.absolutePath} atau assets. Cek logcat (StormPort)."
             if (!ok) Log.e("StormPort", "native init failed")
         }
 

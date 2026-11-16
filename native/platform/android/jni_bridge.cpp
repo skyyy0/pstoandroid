@@ -149,7 +149,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_sky_stormrev_NativeBridge_initialize(JNIEnv* env, jobject /*thiz*/, jobject assetManager,
-                                              jint cores, jint ramMb) {
+                                              jint cores, jint ramMb, jstring portDir) {
     g_engine = std::make_unique<Engine>();
     if (assetManager == nullptr) {
         logError("assets manager is null");
@@ -160,13 +160,43 @@ Java_com_sky_stormrev_NativeBridge_initialize(JNIEnv* env, jobject /*thiz*/, job
         logError("AAssetManager_fromJava failed");
         return JNI_FALSE;
     }
-    AndroidAssetSource source(manager);
+
+    // Asset lookup order:
+    //   1. port directory in the app's own storage (files unpacked from the
+    //      user's retail copy; never shipped inside the APK),
+    //   2. APK assets/port/ (local builds, git-ignored),
+    //   3. APK assets/storm/ (built-in test harness content).
+    // The runtime always reports which one it selected, so a build that fell
+    // back to the harness cannot be mistaken for one running retail assets.
+    storm::ChainedAssetSource source;
+    std::string portRoot;
+    if (portDir != nullptr) {
+        const char* chars = env->GetStringUTFChars(portDir, nullptr);
+        if (chars != nullptr) {
+            portRoot = chars;
+            env->ReleaseStringUTFChars(portDir, chars);
+        }
+    }
+    if (!portRoot.empty()) {
+        source.add(std::make_unique<storm::FileAssetSource>(portRoot));
+        __android_log_print(ANDROID_LOG_INFO, kTag, "port directory: %s", portRoot.c_str());
+    }
+    source.add(std::make_unique<AndroidAssetSource>(manager));
 
     std::vector<uint8_t> manifestBytes;
-    if (!source.read("storm/manifest.txt", manifestBytes)) {
-        logError("storm/manifest.txt missing from APK assets");
+    const char* manifestName = "storm/manifest.txt";
+    if (source.read("manifest.txt", manifestBytes)) {
+        manifestName = "manifest.txt (port directory)";
+    } else if (source.read("port/manifest.txt", manifestBytes)) {
+        manifestName = "port/manifest.txt (APK assets)";
+    } else if (source.read("storm/manifest.txt", manifestBytes)) {
+        manifestName = "storm/manifest.txt (built-in harness)";
+    } else {
+        logError("no manifest found: <portDir>/manifest.txt, assets/port/manifest.txt, "
+                 "assets/storm/manifest.txt");
         return JNI_FALSE;
     }
+    __android_log_print(ANDROID_LOG_INFO, kTag, "manifest: %s", manifestName);
     const std::string manifestText(manifestBytes.begin(), manifestBytes.end());
     if (!g_engine->manifest.parse(manifestText)) {
         logError("manifest is empty or unparsable");

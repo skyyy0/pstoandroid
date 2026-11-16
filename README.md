@@ -3,18 +3,39 @@
 Porting **Naruto Shippuden: Ultimate Ninja Storm Revolution (PS3)** ke Android
 lewat jalur *native ARM64 + pipeline konversi aset*, bukan emulasi PS3.
 
+> **Status jujur:** APK yang dibangun repo ini **belum menjalankan game asli**.
+> Isinya engine + harness uji (duel 60 Hz, AI dummy, mesh prosedural). Yang sudah
+> nyata adalah container retail (CPK → CRILAYLA → XFBIN) beserta runtime yang
+> bisa memuat paket dari storage perangkat; yang belum ada adalah parser payload
+> retail (`.nud`, `.nut`, `.anm`), VFX, audio, dan perilaku pertarungan retail.
+> Rincian bukti per subsistem: [`docs/AUDIT.md`](docs/AUDIT.md), status format:
+> [`docs/FORMATS_RETAIL.md`](docs/FORMATS_RETAIL.md).
+
 Repo ini berisi empat bagian yang bisa diuji terpisah:
 
 | lapisan | isi | status |
 | --- | --- | --- |
-| `tools/stormtools` | toolchain Python: baca `data.cpk`, scan `*.xfbin`, pack glTF → `.smesh`/`.sanm`, generate aset demo | 8 test lulus |
-| `native/` | engine C++17 portabel: loader, skinning, animator, duel 60 Hz, AI, kamera, perf governor | 3.775 cek host lulus |
+| `tools/stormtools` | toolchain Python: `data.cpk` (UTF + CRILAYLA), pemecah `*.xfbin`/NUCC, scan signature, pack glTF → `.smesh`/`.sanm`, aset demo | 21 test lulus |
+| `native/` | engine C++17 portabel: loader, skinning, animator, duel 60 Hz (harness), AI, kamera, perf governor | 3.782 cek host lulus |
 | `native/src/render` | renderer GLES 3: toon ramp 3 band, outline, rim, bayangan kontak, dynamic resolution berbasis viewport | lolos smoke test emulator (SwiftShader) di CI |
 | `android/` | shell Kotlin: GLSurfaceView, kontrol sentuh, HUD FPS + suhu chipset, Gradle | build hanya di CI/Android Studio |
 
-Aset retail (karakter, animasi, audio, tekstur) **tidak** disertakan. Yang ada di
-`android/app/src/main/assets/storm/` adalah aset demo prosedural orisinal supaya
-engine, HUD, dan build APK bisa dijalankan tanpa file game.
+Aset retail (karakter, animasi, audio, tekstur) **tidak** disertakan dan tidak
+pernah masuk APK. Yang ada di `android/app/src/main/assets/storm/` adalah aset
+demo prosedural orisinal: fungsinya menguji engine, HUD, dan build APK tanpa file
+game — bukan pengganti konten retail.
+
+Paket yang Anda konversi sendiri dari salinan game dimuat saat runtime dari
+storage aplikasi, jadi APK tidak perlu dibangun ulang:
+
+```
+Android/data/com.sky.stormrev/files/port/manifest.txt   (+ paket .smesh/.sanm)
+```
+
+Urutan pencarian aset: direktori `port/` di storage → `assets/port/` (build
+lokal) → `assets/storm/` (harness bawaan). Logcat menulis manifest mana yang
+dipakai, mis. `manifest: manifest.txt (port directory)`, sehingga build yang
+jatuh ke harness tidak bisa disalahartikan sebagai build retail.
 
 Loading screen aplikasi menampilkan credit porter: **SKY** — engine, renderer,
 dan pipeline build dikerjakan oleh sky.
@@ -78,13 +99,16 @@ supaya angka di HP sungguhan bisa dibandingkan langsung.
 ## Pipeline aset
 
 ```
-data.cpk ──stormtools cpk──▶ *.xfbin
-        ──XFBIN importer + Blender──▶ .glb
+data.cpk ──stormtools retail unpack──▶ *.xfbin + chunk .nud/.nut/.anm/.bin
+        ──(parser payload retail: belum ada)──▶ .glb
         ──stormtools pack──▶ .smesh / .sanm + manifest.txt
-        ──▶ android/app/src/main/assets/storm/
+        ──▶ storage/port/  atau  assets/storm/
 ```
 
-Detail format dan langkah Blender: `docs/ASSET_PIPELINE.md`.
+`stormtools retail unpack` mendekode CRILAYLA dan memecah container NUCC; setiap
+chunk ditulis utuh beserta `report.json`. Chunk yang belum punya parser **tidak**
+ditafsirkan. Detail format dan langkah berikutnya: `docs/ASSET_PIPELINE.md` dan
+`docs/FORMATS_RETAIL.md`.
 
 ## Build & CI
 
@@ -136,13 +160,19 @@ smoke di `main`; aset Release sendiri tidak dihitung ke kuota 500 MB.
 
 ## Batas kejujuran proyek ini
 
+- **Tidak ada aset game di APK.** Duel yang terlihat setelah install adalah mesh
+  prosedural + AI dummy; itu harness uji, bukan gameplay Storm. Bukti: ukuran APK
+  rilis 1,1 MB, isi aset 132 KB.
+- Parser payload retail belum ada: `.nud` (NDP3), `.nut` (NTP3/GIDX), `.anm`, dan
+  material retail masih diekstrak mentah. Tanpa itu karakter retail belum bisa
+  digambar. Lihat `docs/FORMATS_RETAIL.md`.
+- Runtime **belum** memutar audio, belum memakai ASTC, belum punya shadow map,
+  menu retail, atau script misi. Semua itu ada di roadmap dengan urutan jelas.
 - Emulator PS3 di Android (RPCS3 belum punya build Android; aPS3e/RPCSX butuh
   Snapdragon 8 Gen 2+ dan RAM 12 GB) tidak dipakai. Lihat `docs/FEASIBILITY.md`.
 - Renderer sudah boot dan render di emulator CI (SwiftShader, GLES 3.0), tetapi
   belum diukur di perangkat fisik. Angka FPS di HP sungguhan (mis. Snapdragon
   685) masih perlu diambil; `docs/ROADMAP.md` mencantumkan langkah validasinya.
-- Runtime **belum** memutar audio, belum memakai ASTC, dan belum punya shadow
-  map. Semua itu ada di roadmap dengan urutan yang jelas.
 - Nama, karakter, dan aset Naruto adalah milik Bandai Namco / CyberConnect2.
   Repo tidak mendistribusikannya. Lihat `docs/LEGAL.md`.
 

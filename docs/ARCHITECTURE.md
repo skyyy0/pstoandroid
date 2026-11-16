@@ -22,7 +22,9 @@
 ## Prinsip
 
 1. **Simulasi tidak tahu renderer.** `World` hanya menghitung posisi, state, dan
-   kamera. Bisa diuji tanpa GPU (3.775 cek).
+   kamera. Bisa diuji tanpa GPU (3.782 cek). Duel 60 Hz + AI di `World` adalah
+   **harness uji** yang menjaga skinning/kamera/HUD tetap sehat — bukan model
+   gameplay retail (`docs/AUDIT.md`).
 2. **Renderer tidak tahu gameplay.** `FrameView` adalah daftar datar
    `{mesh, pose, model, flash}`.
 3. **Fixed timestep 60 Hz.** Frame render boleh 30–120 fps; input dan tabrakan
@@ -86,12 +88,30 @@ Batas 4 langkah mencegah *spiral of death* saat frame drop berat.
   start di skala 0.72 dan boleh turun ke 0.40, sehingga frame pertama sudah
   lancar, bukan menunggu governor menyesuaikan diri.
 
+## Sumber aset
+
+`ChainedAssetSource` mencoba beberapa sumber berurutan, dan yang pertama berhasil
+menang:
+
+1. direktori `port/` di storage aplikasi (`getExternalFilesDir()/port`) — paket
+   hasil konversi aset retail milik pengguna, tidak pernah masuk APK;
+2. `assets/port/` — build lokal yang membundel aset, di-gitignore;
+3. `assets/storm/` — harness prosedural bawaan untuk CI.
+
+Manifest yang terpilih dicatat di logcat, sehingga build harness tidak bisa
+diklaim sebagai build retail. Path di manifest relatif terhadap sumber yang
+dipilih, jadi paket di storage dan paket di APK memakai grammar yang sama.
+
 ## Format runtime
 
 `.smesh` dan `.sanm` didokumentasikan di `tools/stormtools/formats.py`
 (little-endian, section tabel, vertex stride 40 byte). Loader memvalidasi semua
 indeks, parent tulang, dan batas submesh; input rusak ditolak dengan pesan,
 tidak pernah crash.
+
+Format retail (CPK/UTF, CRILAYLA, XFBIN/NUCC) dibaca toolchain Python, bukan
+di perangkat: konversi berat terjadi sekali di desktop, hasilnya `.smesh`/`.sanm`.
+Status parser retail per format ada di `docs/FORMATS_RETAIL.md`.
 
 ## Batas yang disengaja
 

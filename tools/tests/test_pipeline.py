@@ -11,10 +11,105 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from stormtools import demo_assets, scan, pack  # noqa: E402
+from stormtools import crilayla, demo_assets, retail, scan, pack, xfbin  # noqa: E402
 from stormtools.binary import Writer, fnv1a32  # noqa: E402
 from stormtools.cpk import Cpk, CpkError  # noqa: E402
 from stormtools.formats import read_anim, read_mesh, write_mesh  # noqa: E402
+
+
+def pack_bits(bits):
+    """Pack decoder-read-order bits into a CRILAYLA payload (MSB first, reversed)."""
+    padded = bits + [0] * ((-len(bits)) % 8)
+    groups = []
+    for start in range(0, len(padded), 8):
+        value = 0
+        for bit in padded[start:start + 8]:
+            value = (value << 1) | bit
+        groups.append(value)
+    return bytes(reversed(groups))
+
+
+def crilayla_literals(payload, prefix=None):
+    """Build a literal-only CRILAYLA frame for ``payload`` (test helper)."""
+    bits = []
+    for byte in reversed(payload):
+        bits.append(0)
+        bits.extend((byte >> shift) & 1 for shift in range(7, -1, -1))
+    stream = pack_bits(bits)
+    raw_prefix = (prefix or b"").ljust(0x100, b"\x00")[:0x100]
+    return b"CRILAYLA" + struct.pack("<II", len(payload), len(stream)) + stream + raw_prefix
+
+
+def length_bits(length):
+    """Encode a back-reference length with the 2/3/5/8-bit chunk grammar."""
+    remaining = length - crilayla.MIN_MATCH
+    bits = []
+    for width in (2, 3, 5):
+        cap = (1 << width) - 1
+        if remaining < cap:
+            bits.extend((remaining >> shift) & 1 for shift in range(width - 1, -1, -1))
+            return bits
+        bits.extend([1] * width)
+        remaining -= cap
+    while remaining >= 0xFF:
+        bits.extend([1] * 8)
+        remaining -= 0xFF
+    bits.extend((remaining >> shift) & 1 for shift in range(7, -1, -1))
+    return bits
+
+
+def crilayla_repeat(unit, repeat):
+    """Frame whose payload is ``unit * repeat``: literals then one back-reference."""
+    bits = []
+    for byte in reversed(unit):
+        bits.append(0)
+        bits.extend((byte >> shift) & 1 for shift in range(7, -1, -1))
+    bits.append(1)
+    distance = len(unit) - crilayla.MIN_MATCH
+    bits.extend((distance >> shift) & 1 for shift in range(12, -1, -1))
+    bits.extend(length_bits(len(unit) * (repeat - 1)))
+    stream = pack_bits(bits)
+    payload_size = len(unit) * repeat
+    return b"CRILAYLA" + struct.pack("<II", payload_size, len(stream)) + stream + b"\x00" * 0x100
+
+
+def build_xfbin(chunks, version=0x0220):
+    """Build a minimal NUCC container: chunks is [(type, name, path, payload)]."""
+    types = sorted({chunk[0] for chunk in chunks})
+    paths = sorted({chunk[2] for chunk in chunks})
+    names = [chunk[1] for chunk in chunks]
+
+    def table(values):
+        return b"".join(value.encode() + b"\x00" for value in values)
+
+    type_blob, path_blob, name_blob = table(types), table(paths), table(names)
+    maps = b"".join(
+        struct.pack(
+            ">III",
+            types.index(chunk_type),
+            paths.index(path) if path in paths else 0,
+            names.index(name),
+        )
+        for chunk_type, name, path, _payload in chunks
+    )
+    indices = b"".join(struct.pack(">I", index) for index in range(len(chunks)))
+
+    body = bytearray()
+    body += struct.pack(">10I", len(types), len(type_blob), len(paths), len(path_blob),
+                        len(names), len(name_blob), len(chunks), len(maps),
+                        len(chunks), 0)
+    body += type_blob + path_blob + name_blob
+    body += b"\x00" * ((-len(body)) % 4)
+    body += maps + indices
+
+    out = bytearray()
+    out += b"NUCC" + struct.pack(">I", version) + b"\x00" * 8
+    out += struct.pack(">IIHH", len(body), 0, version, 0) + bytes(body)
+    for index, (_type, _name, _path, payload) in enumerate(chunks):
+        out += struct.pack(">IIHH", len(payload), index, version, 0)
+        out += payload
+        out += b"\x00" * ((-len(out)) % 4)
+    return bytes(out)
 
 
 def build_cpk(entries, compressed=False):
@@ -40,7 +135,7 @@ def build_cpk(entries, compressed=False):
             strings.extend(text.encode() + b"\x00")
         return string_offsets[text]
 
-    for name, directory, _payload in entries:
+    for name, directory, *_rest in entries:
         intern(name)
         intern(directory)
 
@@ -57,16 +152,16 @@ def build_cpk(entries, compressed=False):
 
     row_values = []
     payload_offset = wrapper + data_start
-    for name, directory, payload in entries:
+    for name, directory, payload, *rest in entries:
         size = len(payload)
-        extract_size = size + 1 if compressed else size
+        extract_size = rest[0] if rest else (size + 1 if compressed else size)
         row = Writer("<")
         row.u32(string_offsets[name]).u32(string_offsets.get(directory, 0))
         row.u32(payload_offset).u32(size).u32(extract_size)
         row_values.append(row.bytes())
         payload_offset += size
 
-    payload_blob = b"".join(payload for _n, _d, payload in entries)
+    payload_blob = b"".join(entry[2] for entry in entries)
 
     out = bytearray()
     out += b"@UTF" + struct.pack("<I", table_size + wrapper) + b"\x00" * 8
@@ -187,8 +282,10 @@ class CpkTests(unittest.TestCase):
             with open(os.path.join(tmp, "chara", "naruto.xfbin"), "rb") as handle:
                 self.assertEqual(handle.read(), payload_a)
 
-    def test_rejects_compressed_entries_with_actionable_error(self):
-        blob = build_cpk([("packed.bin", "data", b"\x00" * 32)], compressed=True)
+    def test_decodes_crilayla_entries(self):
+        raw = b"NUCC" + bytes(range(64))
+        frame = crilayla_literals(raw)
+        blob = build_cpk([("packed.xfbin", "data", frame, 0x100 + len(raw))])
         with tempfile.TemporaryDirectory() as tmp:
             archive = os.path.join(tmp, "data.cpk")
             with open(archive, "wb") as handle:
@@ -196,8 +293,22 @@ class CpkTests(unittest.TestCase):
             cpk = Cpk.open(archive)
             entry = cpk.entries[0]
             self.assertTrue(entry.compressed)
+            self.assertEqual(cpk.read(entry), b"\x00" * 0x100 + raw)
+
+            written = cpk.extract_all(tmp, extensions=[".xfbin"])
+            self.assertEqual(len(written), 1)
+            with open(written[0], "rb") as handle:
+                self.assertEqual(handle.read(), b"\x00" * 0x100 + raw)
+
+    def test_compressed_entry_without_frame_is_rejected(self):
+        blob = build_cpk([("packed.bin", "data", b"\x00" * 32)], compressed=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "data.cpk")
+            with open(archive, "wb") as handle:
+                handle.write(blob)
+            cpk = Cpk.open(archive)
             with self.assertRaises(CpkError) as ctx:
-                cpk.read(entry)
+                cpk.read(cpk.entries[0])
             self.assertIn("CRILAYLA", str(ctx.exception))
 
     def test_missing_table_is_reported(self):
@@ -314,6 +425,120 @@ class DemoAssetTests(unittest.TestCase):
         second = write_mesh(demo_assets.build_character("rookie"))
         self.assertEqual(first, second)
         self.assertEqual(first[:4], b"SMSH")
+
+
+class CrilaylaTests(unittest.TestCase):
+    def test_literal_frame_round_trip(self):
+        payload = bytes(range(1, 40))
+        frame = crilayla_literals(payload)
+        self.assertTrue(crilayla.is_crilayla(frame))
+        out = crilayla.decompress(frame, expected_size=0x100 + len(payload))
+        self.assertEqual(out, b"\x00" * 0x100 + payload)
+
+    def test_back_reference_copies_already_decoded_bytes(self):
+        frame = crilayla_repeat(b"ABCD", 4)
+        out = crilayla.decompress(frame)
+        self.assertEqual(out, b"\x00" * 0x100 + b"ABCD" * 4)
+
+    def test_long_length_uses_the_8bit_extension(self):
+        unit = bytes(range(32))
+        frame = crilayla_repeat(unit, 12)  # 352 byte match: 2/3/5 bit chunks all saturate
+        out = crilayla.decompress(frame)
+        self.assertEqual(out, b"\x00" * 0x100 + unit * 12)
+
+    def test_truncated_frame_is_rejected(self):
+        frame = crilayla_literals(b"x" * 32)
+        with self.assertRaises(crilayla.CrilaylaError):
+            crilayla.decompress(frame[:-10])
+
+    def test_extract_size_mismatch_is_rejected(self):
+        frame = crilayla_literals(b"y" * 8)
+        with self.assertRaises(crilayla.CrilaylaError):
+            crilayla.decompress(frame, expected_size=1234)
+
+    def test_bad_magic_is_rejected(self):
+        with self.assertRaises(crilayla.CrilaylaError):
+            crilayla.decompress(b"NOTLAYLA" + b"\x00" * 32)
+
+
+class XfbinTests(unittest.TestCase):
+    def build(self):
+        return build_xfbin([
+            ("nuccChunkModel", "body", "chara/naruto", b"NDP3" + b"\x01" * 24),
+            ("nuccChunkTexture", "face", "chara/naruto", b"NTP3" + b"\x02" * 12),
+            ("nuccChunkAnm", "idle00", "chara/naruto", b"ANM " + b"\x03" * 8),
+        ])
+
+    def test_parses_chunk_index(self):
+        container = xfbin.parse(self.build())
+        self.assertEqual(container.version, 0x0220)
+        self.assertEqual([chunk.type for chunk in container.chunks],
+                         ["nuccChunkModel", "nuccChunkTexture", "nuccChunkAnm"])
+        self.assertEqual([chunk.name for chunk in container.chunks], ["body", "face", "idle00"])
+        self.assertEqual(container.chunks[0].path, "chara/naruto")
+        self.assertTrue(container.chunks[0].data.startswith(b"NDP3"))
+        self.assertEqual(container.chunks[0].extension, ".nud")
+        self.assertEqual(container.type_counts(),
+                         {"nuccChunkAnm": 1, "nuccChunkModel": 1, "nuccChunkTexture": 1})
+        self.assertEqual(container.warnings, [])
+
+    def test_extracts_typed_payloads(self):
+        container = xfbin.parse(self.build())
+        with tempfile.TemporaryDirectory() as tmp:
+            written = container.extract(tmp)
+            self.assertEqual(len(written), 3)
+            names = sorted(os.path.basename(path) for path in written.values())
+            self.assertEqual(names, ["000_body.nud", "001_face.nut", "002_idle00.anm"])
+            with open(os.path.join(tmp, "002_idle00.anm"), "rb") as handle:
+                self.assertTrue(handle.read().startswith(b"ANM "))
+
+    def test_bad_magic_is_rejected(self):
+        with self.assertRaises(xfbin.XfbinError):
+            xfbin.parse(b"XFBIN" + b"\x00" * 64)
+
+    def test_truncated_index_is_rejected(self):
+        blob = self.build()
+        with self.assertRaises(xfbin.XfbinError):
+            xfbin.parse(blob[:0x30])
+
+
+class RetailTests(unittest.TestCase):
+    def test_unpacks_compressed_xfbin_and_writes_report(self):
+        container = build_xfbin([
+            ("nuccChunkModel", "body", "chara/naruto", b"NDP3" + b"\x04" * 140),
+            ("nuccChunkTexture", "face", "chara/naruto", b"NTP3" + b"\x05" * 24),
+        ])
+        self.assertGreater(len(container), 0x100)
+        # The first 0x100 bytes of a file are stored verbatim as the frame prefix.
+        frame = crilayla_literals(container[0x100:], prefix=container[:0x100])
+        blob = build_cpk([("naruto.xfbin", "chara", frame, len(container))])
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "data.cpk")
+            with open(archive, "wb") as handle:
+                handle.write(blob)
+            out = os.path.join(tmp, "out")
+            summary = retail.unpack(archive, out, log=lambda _line: None)
+            self.assertEqual(summary["entries"], 1)
+            self.assertEqual(summary["failed"], 0)
+            self.assertEqual(summary["chunks"], 2)
+            self.assertEqual(summary["chunk_bytes"],
+                             {"nuccChunkModel": 144, "nuccChunkTexture": 28})
+
+            chunk_dir = os.path.join(out, "chara", "naruto_chunks")
+            self.assertTrue(os.path.isfile(os.path.join(chunk_dir, "000_body.nud")))
+            self.assertTrue(os.path.isfile(os.path.join(chunk_dir, "001_face.nut")))
+            with open(os.path.join(out, "chara", "naruto.xfbin"), "rb") as handle:
+                self.assertEqual(handle.read(), container)
+
+            with open(os.path.join(out, "report.json"), "r", encoding="utf-8") as handle:
+                report = json.load(handle)
+            self.assertEqual(report["archive"], "data.cpk")
+            self.assertEqual(report["files"][0]["chunks"][0]["file"], "000_body.nud")
+            self.assertIn("no runtime importer", report["note"])
+
+    def test_unsafe_paths_are_not_written(self):
+        with self.assertRaises(retail.RetailError):
+            retail._sanitize("../escape.xfbin")
 
 
 if __name__ == "__main__":

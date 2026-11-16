@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,30 @@ public:
 
 private:
     std::string root_;
+};
+
+// Ordered fallback chain: device storage first, packaged APK assets second.
+// Port assets unpacked from the retail game live in the app's own external
+// files directory, so they never have to be baked into the APK (which also
+// keeps the distributable build free of retail data).
+class ChainedAssetSource : public AssetSource {
+public:
+    void add(std::unique_ptr<AssetSource> source) {
+        if (source) sources_.push_back(std::move(source));
+    }
+
+    bool empty() const { return sources_.empty(); }
+
+    bool read(const std::string& path, std::vector<uint8_t>& out) override {
+        for (const std::unique_ptr<AssetSource>& source : sources_) {
+            if (source->read(path, out)) return true;
+        }
+        out.clear();
+        return false;
+    }
+
+private:
+    std::vector<std::unique_ptr<AssetSource>> sources_;
 };
 
 }  // namespace storm

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -126,6 +127,25 @@ public:
 private:
     std::string root_;
 };
+
+void testAssetSources(const Assets& assets) {
+    std::printf("asset sources\n");
+    storm::ChainedAssetSource chained;
+    chained.add(std::make_unique<storm::FileAssetSource>("/nonexistent-storm-port"));
+    chained.add(std::make_unique<storm::FileAssetSource>(assets.root()));
+
+    std::vector<uint8_t> bytes;
+    CHECK(chained.read("storm/manifest.txt", bytes));
+    CHECK(!bytes.empty());
+    CHECK(bytes[0] != 0);
+
+    CHECK(!chained.read("storm/missing.txt", bytes));
+    CHECK(bytes.empty());
+
+    storm::ChainedAssetSource empty;
+    CHECK(empty.empty());
+    CHECK(!empty.read("storm/manifest.txt", bytes));
+}
 
 void testPackages(const Assets& assets) {
     std::printf("packages\n");
@@ -435,6 +455,7 @@ int main(int argc, char** argv) {
 
     testMath();
     testManifest();
+    testAssetSources(assets);
     testPackages(assets);
     testAnimation(assets);
     testSimulation();
